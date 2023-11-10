@@ -1,0 +1,47 @@
+---
+title: "README"
+format: html
+editor: visual
+---
+
+## Modeling data on penguins using machine learning
+
+The tidymodels framework is a collection of packages for machine learning using tidyverse principles. tidymodels offers a consistent, flexible framework to streamline data preparation, model selection, training, and evaluation. This template includes all relevant packages and sample code to get you started with a basic machine learning workflow.
+
+To interact with this template, you can:
+
+-   **Run the code chunks in `languages.qmd`**, a Quarto document that imports, explores, and visualizes the language data. To run a code chunk, press the green "play" button in the upper-right corner of the chunk.
+
+-   **Edit any code chunk in `languages.qmd`**, then run that chunk again to see the results of your changes.
+
+-   **Render `languages.qmd`** to create an HTML report. You can render Quarto documents by pressing the *Render* button at the top of the editor.
+
+### Data
+
+This template uses a version of [the `palmerpenguins` data](https://allisonhorst.github.io/palmerpenguins/) containing measurements from different types of penguins. The version used in the template is the data contained in `modeldata::penguins` with missing values omitted.
+
+### Files
+
+There are multiple files you can explore and interact with:
+
+-   `tidymodels.qmd`: A [Quarto](https://quarto.org/) document that imports the palmerpenguins data, partitions it into training and testing sets, fits several candidate models, and evaluates their performance before ultimately fitting a final model!
+
+-   `data/penguins.csv`: The cleaned data file, which is ready for modeling.
+
+### Packages
+
+This template includes the tidymodels meta-package, which includes:
+
+-   rsample
+-   parsnip
+-   recipes
+-   tune
+-   yardstick
+-   several tidyverse packages
+    -   dplyr
+    -   ggplot2
+    -   purrr
+    -   tibble
+    -   tidyr
+
+...as well as the ranger package for fitting random forest models.

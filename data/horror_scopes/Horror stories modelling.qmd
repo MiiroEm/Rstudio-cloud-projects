@@ -1,0 +1,257 @@
+---
+title: "Horror stories"
+author: "Miiro Emmanuel, MD"
+format: html
+editor: visual
+---
+
+# Horror Legends stories
+
+
+```{r}
+#| label: set-up
+#| results: hide
+
+library(tidyverse)
+# install the development version of "textfeatures" as the package is nolonger on CRAN
+## install from github
+# install.packages("devtools")
+# devtools::install_github("mkearney/textfeatures")
+library(textfeatures)
+library(textrecipes)
+library(tidymodels)
+# install.packages("glmnet")
+library("glmnet")
+# install.packages("stopwords")
+library(stopwords)
+library(conflicted)
+```
+
+This idea is inspired by a tutorial on text modelling by the [Tidymodels site](https://www.tidymodels.org/learn/work/tune-text/). The data comes from the tidytuesday project (accessible on their [github](https://github.com/rfordatascience/tidytuesday/blob/master/data/2023/2023-10-31/readme.md))
+
+The idea is to predict whether a story is true or a legend based on the features in the story.
+
+```{r}
+horror_articles <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-10-31/horror_articles.csv')
+glimpse(horror_articles)
+```
+
+It might take heavy pre-processing the claims variable. For example the first claim contains symbols.
+
+```{r}
+set.seed(850)
+horror_articles %>% filter(rating == "legend") %>% sample_n(5) %>% pull(url)
+```
+
+To simplify the initial analysis, I am going to use cases where the claim was judged to be true or false and ignore the cases in between.
+
+```{r}
+table(horror_articles$rating)
+```
+
+As part of exploratory analysis:
+
+```{r}
+horror_articles %>% group_by(rating) %>% summarise(n = n()) %>% ggplot(aes(rating, n)) + geom_col() + coord_flip()
+```
+
+Alternatively, I can use three categories: true, false or true and drop the others.
+
+```{r}
+horror_articles_cat <-  horror_articles %>% mutate(rating_cat = rating %>% case_match(c("false", "mostly false", "probably false") ~ "false", c("true", "partly true") ~ "true", .default = rating))
+# see the change: increase in false and true
+table(horror_articles_cat$rating_cat)
+
+# select true, false, legend
+horror_articles_cat <- horror_articles_cat %>% filter(rating_cat %in% c("true", "false", "legend")) %>% rename("rating_raw" = "rating")
+horror_articles_cat <- horror_articles_cat %>% select(-"rating_raw")
+glimpse(horror_articles_cat)
+```
+
+Okay. Time to test out the tidytext recipe. Yummy. Create a pre-processing recipe. I've borrowed a few ideas from this tutorial on [R-bloggers](https://www.r-bloggers.com/2020/05/sentiment-analysis-with-tidymodels-and-tidytuesday-animal-crossing-reviews/) by Julia Silge.
+
+```{r}
+set.seed(1856)
+# hold out some data (1/4) for testing the model; use false to preserve the imbalance
+data_split <- initial_split(horror_articles_cat, prop = 3/4, strata = rating_cat)
+
+# create data_frames for the 2 sets
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+# training set proportions by rating
+train_data %>% 
+  count(rating_cat) %>% 
+  mutate(prop = n/sum(n))
+# training set proportions by class
+test_data %>% 
+  count(rating_cat) %>% 
+  mutate(prop = n/sum(n))
+
+# get helper objects from 'textfeatures'
+basics <- names(count_functions)
+
+# function to conver feature hashes into binary scores
+binary_hash <- function(x) {
+  x <- ifelse(x < 0, -1, x)
+  x <- ifelse(x > 0,  1, x)
+  x
+}
+
+# create the recipe
+# library(textrecipes)
+
+pre_proc <-
+  recipe(rating_cat ~ claim + title + url + subtitle + author + published, data = train_data) %>%
+  # leave out id variables i.e not predictors
+  update_role(title, subtitle, author, published, url, new_role = "id") %>%
+  # Make a copy of the raw text
+  step_mutate(claim_raw = claim) %>%
+  # Compute the initial features. This removes the `claim_raw` column
+  step_textfeature(claim_raw) %>%
+  # Make the feature names shorter
+  step_rename_at(
+    starts_with("textfeature_"),
+    fn = ~ gsub("textfeature_review_raw_", "", .)
+  ) %>%
+  step_tokenize(claim)  %>%
+  step_tfidf(claim) %>%
+  step_stopwords(claim) %>%
+  # weighting of words using term-frequency-inverse-document-frequency
+  step_stem(claim) %>%
+  # Here is where the tuning parameter is declared
+  step_texthash(claim, signed = TRUE, num_terms = tune()) %>%
+  # Simplify these names
+  step_rename_at(starts_with("review_hash"), fn = ~ gsub("review_", "", .)) %>%
+  # Convert the features from counts to values of -1, 0, or 1
+  step_mutate_at(starts_with("hash"), fn = binary_hash) %>%
+  # Transform the initial feature set
+  step_YeoJohnson(one_of(!!basics)) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
+```
+
+Down to the model. We shall use a multinomial model since we have three categories.
+
+```{r}
+mult_mod <- multinom_reg(mode = "classification",
+                         engine = "glmnet",
+                         penalty = tune(),
+                         mixture = tune()) # the choice of 0.5 here is arbitrary; tune the model?
+```
+
+Re-sampling methods: k-fold cross validation might not be the best option given the small dataset, might try leave-one-out one cross-validation first.
+
+```{r}
+set.seed(1423) # I tried to use leave-one-out cross-validation but loo is not currently supported in grid tuning
+# loo <- loo_cv(train_data)
+folds <- vfold_cv(train_data)
+```
+
+Tune the grid. I'm using the values used in the tidytext modelling [tutorial](https://www.tidymodels.org/learn/work/tune-text/)
+
+```{r}
+five_star_grid <- 
+  crossing(
+    penalty = 10^seq(-3, 0, length = 20),
+    mixture = c(0.01, 0.25, 0.50, 0.75, 1),
+    num_terms = 2^c(8, 10, 12)
+  )
+# that is a whooping 300 models to train!
+```
+
+Save the information on the number of predictors by penalty value for each glmnet model using an extraction function.
+
+```{r}
+glmnet_vars <- function(x) {
+  # `x` will be a workflow object
+  mod <- extract_model(x)
+  # `df` is the number of model terms for each penalty value
+  tibble(penalty = mod$lambda, num_vars = mod$df)
+}
+
+ctrl <- control_grid(extract = glmnet_vars, verbose = TRUE)
+```
+
+Let's run the grid search.
+
+```{r}
+roc_scores <- metric_set(roc_auc)
+
+set.seed(1745)
+five_star_glmnet <- 
+  tune_grid(
+    mult_mod, 
+    pre_proc, 
+    resamples = folds, 
+    grid = five_star_grid, 
+    metrics = roc_scores, 
+    control = ctrl
+  )
+```
+
+Extract metrics that compare performance of the tested models.
+
+```{r}
+five_star_glmnet %>% collect_metrics() %>% head(10)
+```
+Plot the results
+```{r}
+five_star_glmnet %>%
+  collect_metrics() %>%
+  mutate(across(c("mixture", "num_terms", ".metric"), factor)) %>% 
+  # pivot_longer(cols = c("mixture", "num_terms"), names_to = "parameter", values_to = "value") %>% 
+  ggplot(aes(penalty, mean, color = num_terms)) +
+  geom_line(size = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ mixture, scales = "free", ncol = 2, labeller = label_both) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)
+```
+Mixture 0.01 and 4096 terms see
+Try another plot
+```{r}
+autoplot(five_star_glmnet, metric = "roc_auc")
+```
+Extract the best model parameters.
+```{r}
+best_hyper_parameters <- five_star_glmnet %>% select_best()
+```
+Create work flow object putting together our pre-processing recipe, model, data, as well as fit the model. Evaluate our model using resamples. The rationale for evaluating model performance using resampling to to avoid undue optimism since the model has alread 'learned' the training data. Resampling changes the data in ways that are less familiar to the model. See [tidymodels tutorial](https://www.tidymodels.org/start/resampling/) on evaluating model performance for more information.
+```{r}
+final_workflow <-  workflow() %>% 
+  add_recipe(pre_proc) %>% 
+  add_model(mult_mod) %>% 
+  finalize_workflow(best_hyper_parameters)
+
+resamples_mod <- final_workflow %>% 
+  fit_resamples(resamples = folds)
+resamples_mod
+```
+Let's see performance on different folds.
+```{r}
+collect_metrics(resamples_mod)
+```
+Wow. This looks like terrible performance. Is our feature set not capturing the relevant information or there's not enough information in the claims being investigated to predict whether it is true or not? Or is the model that I'm using not good enough. Another possiblility is that the data I'm using is too small. I can investigate some of these hypotheses. Before we do that, let us see the test set performance.
+```{r}
+final_fit <- final_workflow %>% last_fit(data_split)
+
+final_fit %>% collect_metrics()
+```
+The model performed slightly better on the test set compared to the evaluation with re-sampling.
+Looking at the receiver operating curves, the classification is worse for truth and better for legends and false claims. In fact for classifying true claims, it's only marginally better than guessing!
+```{r}
+final_fit %>%  collect_predictions() %>% roc_curve(rating_cat, .pred_false:.pred_true) %>% autoplot()
+```
+Let's look at the workflow again.
+```{r}
+extract_workflow(final_fit)
+```
+
+
+
+
+
+
+
+
+
