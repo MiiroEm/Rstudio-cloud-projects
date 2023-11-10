@@ -1,5 +1,7 @@
 # This script adapts John Hermon's webscraping tidytuesday code to add more data
 # which I will use in my text modelling case study
+# run this script one function at a time to debug
+
 library(tidyverse)
 library(here)
 library(fs)
