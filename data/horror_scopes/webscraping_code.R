@@ -28,6 +28,7 @@ archives_section_url <- scrape(session) %>%
 regex_pattern <- "/category/([^/]+)"
 extract_category <- function(url){
   category_name <- str_match(url, regex_pattern)[,2]
+  return(category_name)
 }
 categories <- map(archives_section_url, extract_category) |> unlist()
 categories
